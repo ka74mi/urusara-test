@@ -1,0 +1,63 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Daikin エアコンに接続",
+        "description": "エアコンのIPv4アドレス（固定IP）を入力してください。",
+        "data": {
+          "host": "IPアドレス"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "接続に失敗しました。IPアドレスを確認してください。"
+    },
+    "abort": {
+      "already_configured": "この機器は既に設定されています。"
+    }
+  },
+  "entity": {
+    "switch": {
+      "humidify": {
+        "name": "加湿モード"
+      },
+      "ventilation": {
+        "name": "換気"
+      },
+      "power_saving": {
+        "name": "節電"
+      }
+    },
+    "select": {
+      "ventilation_strength": {
+        "name": "換気の強さ",
+        "state": {
+          "strong": "強",
+          "auto": "自動"
+        }
+      },
+      "ventilation_direction": {
+        "name": "吸気/排気",
+        "state": {
+          "intake": "吸気",
+          "exhaust": "排気"
+        }
+      },
+      "humidity": {
+        "name": "しつど",
+        "state": {
+          "off": "OFF",
+          "40": "40%",
+          "45": "45%",
+          "50": "50%",
+          "55": "55%",
+          "60": "60%",
+          "continuous": "連続",
+          "low": "低め",
+          "normal": "標準",
+          "high": "高め"
+        }
+      }
+    }
+  }
+}
