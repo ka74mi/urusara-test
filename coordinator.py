@@ -1,6 +1,7 @@
 """Daikin うるさら統合の DataUpdateCoordinator。"""
 from __future__ import annotations
 
+import copy
 import logging
 from datetime import timedelta
 from typing import Any
@@ -15,6 +16,7 @@ from .const import (
     CTRL_STOP,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
+    NODE_COMMON,
     NODE_INDOOR,
     NODE_MODE,
     NODE_POWER,
@@ -69,23 +71,26 @@ class DaikinCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     def get_common_param(self, param: str) -> str | None:
         """e_3003 配下の任意パラメータの現在値を取得する。"""
-        return self.data.get(NODE_INDOOR, {}).get("e_3003", {}).get(param)
+        return self.data.get(NODE_INDOOR, {}).get(NODE_COMMON, {}).get(param)
 
     @property
     def current_temperature(self) -> float | None:
         """e_1002/e_A00B/p_01 (室内温度、実測値) を摂氏の数値として返す。
 
-        daikin-brp084-protocol.md によれば実測値系は16進文字列ではなく
-        数値がそのまま入ることがあるため、両方のケースに対応する。
+        実機応答では 16進文字列 (例: "1C" -> 28℃)。md.mi="F7" (-9) のように
+        符号付き8bitなので、符号付きとして解釈する。
         """
         raw = self.data.get(NODE_INDOOR, {}).get(NODE_SENSOR, {}).get(SENSOR_TEMPERATURE_PARAM)
-        return _to_float(raw)
+        return _decode_sensor(raw, signed=True)
 
     @property
     def current_humidity(self) -> float | None:
-        """e_1002/e_A00B/p_02 (室内湿度、実測値) を%の数値として返す。"""
+        """e_1002/e_A00B/p_02 (室内湿度、実測値) を%の数値として返す。
+
+        実機応答では 16進文字列 (例: "32" -> 50%)。10進として読むと誤るため注意。
+        """
         raw = self.data.get(NODE_INDOOR, {}).get(NODE_SENSOR, {}).get(SENSOR_HUMIDITY_PARAM)
-        return _to_float(raw)
+        return _decode_sensor(raw, signed=False)
 
     # --- 書き込み ---
 
@@ -107,7 +112,7 @@ class DaikinCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         except DaikinApiError:
             _LOGGER.error("設定変更の書き込みに失敗しました: changes=%s", changes, exc_info=True)
             return
-        await self.async_request_refresh()
+        self._apply_local(e3001=e3001)
 
     async def async_write_common_settings(self, changes: dict[str, str]) -> None:
         """e_3003 配下 (節電など) のパラメータを変更する。運転状態を自動補完する。
@@ -120,7 +125,7 @@ class DaikinCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         except DaikinApiError:
             _LOGGER.error("共通設定の書き込みに失敗しました: changes=%s", changes, exc_info=True)
             return
-        await self.async_request_refresh()
+        self._apply_local(e3003=changes)
 
     async def async_set_power(self, turn_on: bool) -> None:
         """電源 ON/OFF。制御内容フラグに開始/停止を指定する。"""
@@ -132,27 +137,49 @@ class DaikinCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         except DaikinApiError:
             _LOGGER.error("電源操作の書き込みに失敗しました: turn_on=%s", turn_on, exc_info=True)
             return
-        await self.async_request_refresh()
+        self._apply_local(a002=a002)
+
+    def _apply_local(
+        self,
+        *,
+        a002: dict[str, str] | None = None,
+        e3001: dict[str, str] | None = None,
+        e3003: dict[str, str] | None = None,
+    ) -> None:
+        """書き込みが成功した内容を、実機の再取得を待たずに手元の状態へ反映する。
+
+        HomeKit はモード変更と温度設定を1回のバッチで送ってくる。書き込みごとに
+        再取得 (async_request_refresh) を待つと、後続の書き込みが古いモードを参照し、
+        別モード用のパラメータへ誤って書き込む恐れがある。そのため成功した内容を
+        先に反映し、実機との照合は定期取得 (DEFAULT_SCAN_INTERVAL) に任せる。
+        """
+        data = copy.deepcopy(self.data) if self.data else {}
+        indoor = data.setdefault(NODE_INDOOR, {})
+        for node, values in ((NODE_POWER, a002), (NODE_MODE, e3001), (NODE_COMMON, e3003)):
+            if values:
+                indoor.setdefault(node, {}).update(values)
+        self.async_set_updated_data(data)
 
 
-def _to_float(raw: Any) -> float | None:
-    """実測値パラメータを float に変換する。
+def _decode_sensor(raw: Any, *, signed: bool) -> float | None:
+    """実測値パラメータ (16進文字列) を数値に変換する。
 
-    数値がそのまま入る場合と、16進文字列で入る場合の両方に対応する
-    (daikin-brp084-protocol.md の実測値系パラメータの注記を参照)。
+    文字列は常に16進として解釈する。"32" のように数字だけで構成される値も
+    16進 (0x32 = 50) であり、10進として読むと誤る。
+    数値がそのまま入っている場合 (別エンドポイントの応答など) はそのまま返す。
     """
-    if raw is None:
+    if raw is None or isinstance(raw, bool):
         return None
     if isinstance(raw, (int, float)):
         return float(raw)
     if isinstance(raw, str):
         try:
-            return float(raw)
-        except ValueError:
-            pass
-        try:
-            return float(int(raw, 16))
+            value = int(raw, 16)
         except ValueError:
             _LOGGER.debug("実測値のパースに失敗しました: raw=%s", raw)
             return None
+        bits = len(raw) * 4
+        if signed and value >= 1 << (bits - 1):
+            value -= 1 << bits
+        return float(value)
     return None

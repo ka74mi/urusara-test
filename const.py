@@ -5,7 +5,15 @@
 """
 from __future__ import annotations
 
-from homeassistant.components.climate import HVACMode
+from homeassistant.components.climate import (
+    FAN_AUTO,
+    FAN_HIGH,
+    FAN_LOW,
+    FAN_MEDIUM,
+    SWING_OFF,
+    SWING_ON,
+    HVACMode,
+)
 
 DOMAIN = "daikin_urusara_x"
 
@@ -49,14 +57,36 @@ MODE_AUTO = "0300"
 MODE_DRY = "0500"
 MODE_HUMIDIFY = "0800"  # climate エンティティの外で扱う (switch/select 経由)
 
+# --- climate (HomeKit 公開用) と実機モードの対応 ---
+# climate が公開する運転モードは 冷房/暖房/自動 のみ (HomeKit の HeaterCooler が
+# 表現できるのが Auto/Heat/Cool の3つだけのため)。
+# 送風・除湿・加湿は運転モード select (select.py) で切り替える。
 HVAC_MODE_TO_DSIOT: dict[HVACMode, str] = {
     HVACMode.COOL: MODE_COOL,
     HVACMode.HEAT: MODE_HEAT,
     HVACMode.AUTO: MODE_AUTO,
-    HVACMode.FAN_ONLY: MODE_FAN_ONLY,
-    HVACMode.DRY: MODE_DRY,
 }
-DSIOT_TO_HVAC_MODE: dict[str, HVACMode] = {v: k for k, v in HVAC_MODE_TO_DSIOT.items()}
+# 実機が送風・除湿・加湿で運転中の場合、climate 上は COOL として表示する
+# (運転中であること自体は伝わる。実際のモードは運転モード select が示す)。
+DSIOT_TO_HVAC_MODE: dict[str, HVACMode] = {
+    MODE_COOL: HVACMode.COOL,
+    MODE_HEAT: HVACMode.HEAT,
+    MODE_AUTO: HVACMode.AUTO,
+    MODE_FAN_ONLY: HVACMode.COOL,
+    MODE_DRY: HVACMode.COOL,
+    MODE_HUMIDIFY: HVACMode.COOL,
+}
+
+# --- 運転モード select (全6モードを選択できる) ---
+OPERATION_MODE_LABELS: dict[str, str] = {
+    MODE_COOL: "cool",
+    MODE_HEAT: "heat",
+    MODE_AUTO: "auto",
+    MODE_FAN_ONLY: "fan_only",
+    MODE_DRY: "dry",
+    MODE_HUMIDIFY: "humidify",
+}
+OPERATION_MODE_LABEL_TO_VALUE: dict[str, str] = {v: k for k, v in OPERATION_MODE_LABELS.items()}
 
 # --- モードごとの独立パラメータセット ---
 # 風向上下
@@ -69,15 +99,6 @@ SWING_VERT_PARAM: dict[str, str] = {
     MODE_HUMIDIFY: "p_29",
 }
 
-# 風向左右
-SWING_HORIZ_PARAM: dict[str, str] = {
-    MODE_COOL: "p_06",
-    MODE_HEAT: "p_08",
-    MODE_AUTO: "p_21",
-    MODE_FAN_ONLY: "p_25",
-    MODE_DRY: "p_23",
-    MODE_HUMIDIFY: "p_2A",
-}
 
 # 風量
 FAN_PARAM: dict[str, str] = {
@@ -161,57 +182,73 @@ AUTO_HUMIDITY_LABELS: dict[str, str] = {
 }
 AUTO_HUMIDITY_LABEL_TO_VALUE: dict[str, str] = {v: k for k, v in AUTO_HUMIDITY_LABELS.items()}
 
-# --- 風向 値対応 ---
-SWING_VERT_OFF = "000000"
-SWING_VERT_AUTO = "100000"
-SWING_VERT_SWING = "0F0000"
-SWING_VERT_CIRCULATE = "140000"
-# 固定1段目(上)〜6段目(下): "010000"〜"060000"
+# --- 風向上下 値対応 ---
+# 風向上下は 4バイト幅 (実機 mx が 4バイト)。3バイトで書くと桁数が合わない。
+# 風向左右は 3バイト幅だが、climate からは公開しない。
+SWING_VERT_OFF = "00000000"
+SWING_VERT_AUTO = "10000000"
+SWING_VERT_SWING = "0F000000"
+# 参考: サーキュレーション="14000000"、固定1段目(上)〜6段目(下)="01000000"〜"06000000"
 
-SWING_HORIZ_OFF = "000000"
-SWING_HORIZ_SWING = "0F0000"
-# 固定1/5〜5/5: "0A0000"〜"0E0000"
+# climate の swing は「上下スイング」の ON/OFF のみ。
+# OFF は基本「自動(10)」に戻す (daikin-matter と同じ扱い)。ただし送風モードの
+# 風向上下 p_24 は mx=7F805800 で「自動」が許可されていないため、その場合のみ
+# 「オフ(00)」を使う (実機応答のビット解析による)。
+SWING_LABEL_TO_VERT: dict[str, str] = {
+    SWING_ON: SWING_VERT_SWING,
+    SWING_OFF: SWING_VERT_AUTO,
+}
+SWING_VERT_AUTO_NOT_ALLOWED: frozenset[str] = frozenset({MODE_FAN_ONLY})
 
 # --- 風量 値対応 ---
-FAN_AUTO = "0A00"
-FAN_QUIET = "0B00"
+FAN_VALUE_AUTO = "0A00"
+FAN_VALUE_QUIET = "0B00"
 # 風量1〜5: "0300"〜"0700"
 
-FAN_MODE_LABELS: dict[str, str] = {
-    FAN_AUTO: "auto",
-    FAN_QUIET: "quiet",
-    "0300": "1",
-    "0400": "2",
-    "0500": "3",
-    "0600": "4",
-    "0700": "5",
+# HomeKit (RotationSpeed) が扱える段階に合わせ、公開する風量は4種類に固定する。
+# 書き込み: 自動=自動 / low=静か / medium=風量3 / high=風量5
+FAN_LABEL_TO_DSIOT: dict[str, str] = {
+    FAN_AUTO: FAN_VALUE_AUTO,
+    FAN_LOW: FAN_VALUE_QUIET,
+    FAN_MEDIUM: "0500",
+    FAN_HIGH: "0700",
 }
-FAN_LABEL_TO_VALUE: dict[str, str] = {v: k for k, v in FAN_MODE_LABELS.items()}
+FAN_MODES_EXPOSED: list[str] = list(FAN_LABEL_TO_DSIOT)
 
-SWING_VERT_LABELS: dict[str, str] = {
-    SWING_VERT_OFF: "off",
-    SWING_VERT_AUTO: "auto",
-    SWING_VERT_SWING: "swing",
-    SWING_VERT_CIRCULATE: "circulate",
-    "010000": "1",
-    "020000": "2",
-    "030000": "3",
-    "040000": "4",
-    "050000": "5",
-    "060000": "6",
+# 読み取り: low は「静か」専用。風量1〜3 は medium、4〜5 は high に寄せる
+# (アプリで風量1を選ぶと medium と表示される。厳密な一致ではなく近似)。
+FAN_DSIOT_TO_LABEL: dict[str, str] = {
+    FAN_VALUE_AUTO: FAN_AUTO,
+    FAN_VALUE_QUIET: FAN_LOW,
+    "0300": FAN_MEDIUM,
+    "0400": FAN_MEDIUM,
+    "0500": FAN_MEDIUM,
+    "0600": FAN_HIGH,
+    "0700": FAN_HIGH,
 }
-SWING_VERT_LABEL_TO_VALUE: dict[str, str] = {v: k for k, v in SWING_VERT_LABELS.items()}
 
-SWING_HORIZ_LABELS: dict[str, str] = {
-    SWING_HORIZ_OFF: "off",
-    SWING_HORIZ_SWING: "swing",
-    "0A0000": "1",
-    "0B0000": "2",
-    "0C0000": "3",
-    "0D0000": "4",
-    "0E0000": "5",
+# モードごとに実機が受け付ける風量値 (実機応答の md.mx をビット解析した結果)。
+#   冷房 p_09 / 暖房 p_0A / 送風 p_28 / 加湿 p_2B : mx=F80C -> 風量1〜5, 自動, 静か
+#   自動 p_26                                    : mx=000C -> 自動, 静か
+#   除湿 p_27                                    : mx=0004 -> 自動のみ
+# 許可されない値を選んだ場合は「自動」に丸める (書き込み拒否を避ける)。
+_FAN_ALL_VALUES = frozenset({FAN_VALUE_AUTO, FAN_VALUE_QUIET, "0300", "0400", "0500", "0600", "0700"})
+FAN_ALLOWED_VALUES: dict[str, frozenset[str]] = {
+    MODE_COOL: _FAN_ALL_VALUES,
+    MODE_HEAT: _FAN_ALL_VALUES,
+    MODE_FAN_ONLY: _FAN_ALL_VALUES,
+    MODE_HUMIDIFY: _FAN_ALL_VALUES,
+    MODE_AUTO: frozenset({FAN_VALUE_AUTO, FAN_VALUE_QUIET}),
+    MODE_DRY: frozenset({FAN_VALUE_AUTO}),
 }
-SWING_HORIZ_LABEL_TO_VALUE: dict[str, str] = {v: k for k, v in SWING_HORIZ_LABELS.items()}
+
+# --- 設定温度の範囲 (この機種の実機応答 md.mi / md.mx より。単位 0.5℃) ---
+#   冷房 p_02: mi=0x24(18.0) mx=0x40(32.0) / 暖房 p_03: mi=0x1C(14.0) mx=0x3C(30.0)
+TEMPERATURE_RANGE: dict[str, tuple[float, float]] = {
+    MODE_COOL: (18.0, 32.0),
+    MODE_HEAT: (14.0, 30.0),
+}
+
 
 # --- 換気・節電など (うるさら特有、switch/select 対象) ---
 VENTILATION_ONOFF_PARAM = "p_36"  # e_3001 配下

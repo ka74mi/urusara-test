@@ -18,9 +18,6 @@
   },
   "entity": {
     "switch": {
-      "humidify": {
-        "name": "加湿モード"
-      },
       "ventilation": {
         "name": "換気"
       },
@@ -29,6 +26,17 @@
       }
     },
     "select": {
+      "operation_mode": {
+        "name": "運転モード",
+        "state": {
+          "cool": "冷房",
+          "heat": "暖房",
+          "auto": "自動",
+          "fan_only": "送風",
+          "dry": "除湿",
+          "humidify": "加湿"
+        }
+      },
       "ventilation_strength": {
         "name": "換気の強さ",
         "state": {

@@ -1,6 +1,9 @@
 """Daikin うるさら select エンティティ。
 
-うるさら特有機能 (換気の強さ・吸排気方向) に加え、しつど設定を実装する。
+運転モード (全6モード)、うるさら特有機能 (換気の強さ・吸排気方向)、しつど設定を実装する。
+
+運転モード select は climate が公開しない送風・除湿・加湿への切り替え口。
+climate (HomeKit 公開用) は 冷房/暖房/自動 のみのため、それ以外はここで選ぶ。
 しつどはスマホアプリのUIに合わせ、モード別に別エンティティへ分割せず、
 現在の運転モードに応じて選択肢・現在値が動的に切り替わる単一エンティティ
 (DaikinHumiditySelect) として実装する。
@@ -34,6 +37,8 @@ from .const import (
     MODE_HUMIDIFY,
     ONOFF_OFF,
     ONOFF_ON,
+    OPERATION_MODE_LABEL_TO_VALUE,
+    OPERATION_MODE_LABELS,
     VENTILATION_DIRECTION_LABEL_TO_VALUE,
     VENTILATION_DIRECTION_LABELS,
     VENTILATION_DIRECTION_PARAM,
@@ -59,6 +64,7 @@ async def async_setup_entry(
     coordinator: DaikinCoordinator = hass.data[DOMAIN][entry.entry_id]
     async_add_entities(
         [
+            DaikinOperationModeSelect(coordinator),
             DaikinVentilationStrengthSelect(coordinator),
             DaikinVentilationDirectionSelect(coordinator),
             DaikinHumiditySelect(coordinator),
@@ -91,6 +97,33 @@ class _DaikinModeParamSelect(DaikinEntity, SelectEntity):
             _LOGGER.warning("不明な option です: %s", option)
             return
         await self.coordinator.async_write_settings({self._param: value})
+
+
+class DaikinOperationModeSelect(DaikinEntity, SelectEntity):
+    """運転モード (冷房/暖房/自動/送風/除湿/加湿)。
+
+    運転の ON/OFF は変更しない (モードだけを切り替える)。停止中に選んだ場合は
+    次に運転を開始したときにそのモードで動く。運転開始は climate 側で行う。
+    """
+
+    _attr_translation_key = "operation_mode"
+    _attr_icon = "mdi:air-conditioner"
+
+    def __init__(self, coordinator: DaikinCoordinator) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{coordinator.entry.entry_id}_operation_mode"
+        self._attr_options = list(OPERATION_MODE_LABELS.values())
+
+    @property
+    def current_option(self) -> str | None:
+        return OPERATION_MODE_LABELS.get(self.coordinator.current_mode)
+
+    async def async_select_option(self, option: str) -> None:
+        value = OPERATION_MODE_LABEL_TO_VALUE.get(option)
+        if value is None:
+            _LOGGER.warning("不明な option です: %s", option)
+            return
+        await self.coordinator.async_write_settings({"p_01": value})
 
 
 class DaikinVentilationStrengthSelect(_DaikinModeParamSelect):

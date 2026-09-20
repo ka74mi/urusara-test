@@ -1,13 +1,10 @@
 """Daikin うるさら switch エンティティ。
 
-うるさら特有機能 (加湿モードへの切替・換気ON/OFF・節電) を climate エンティティの
-外に切り出して実装する (設計方針 B)。
+うるさら特有機能 (換気ON/OFF・節電) を climate エンティティの外に切り出して実装する。
 
 しつどのON/OFF・レベル調整は select.py の統一しつど select
-(DaikinHumiditySelect) に一本化されている。この switch.py の
-DaikinHumidifySwitch は「climate の HVACMode にない加湿モードへ
-切り替えるかどうか」のみを担当し、加湿モード中のしつどレベル調整は
-統一 select 側が担う (役割分担)。
+(DaikinHumiditySelect) に、加湿を含む運転モードの切り替えは
+運転モード select (DaikinOperationModeSelect) に一本化されている。
 """
 from __future__ import annotations
 
@@ -21,8 +18,6 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import (
     DOMAIN,
-    HUMIDITY_ONOFF_PARAM,
-    MODE_HUMIDIFY,
     ONOFF_OFF,
     ONOFF_ON,
     POWER_SAVING_PARAM,
@@ -33,9 +28,6 @@ from .entity import DaikinEntity
 
 _LOGGER = logging.getLogger(__name__)
 
-# 加湿モードのしつどON/OFFパラメータ (e_3001/p_33)
-HUMIDIFY_ONOFF_PARAM = HUMIDITY_ONOFF_PARAM[MODE_HUMIDIFY]
-
 
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
@@ -44,7 +36,6 @@ async def async_setup_entry(
     coordinator: DaikinCoordinator = hass.data[DOMAIN][entry.entry_id]
     async_add_entities(
         [
-            DaikinHumidifySwitch(coordinator),
             DaikinVentilationSwitch(coordinator),
             DaikinPowerSavingSwitch(coordinator),
         ]
@@ -72,40 +63,6 @@ class _DaikinModeParamSwitch(DaikinEntity, SwitchEntity):
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         await self.coordinator.async_write_settings({self._param: ONOFF_OFF})
-
-
-class DaikinHumidifySwitch(_DaikinModeParamSwitch):
-    """加湿モードへの切替スイッチ。
-
-    加湿は climate の HVACMode に存在しない独立運転モードのため、
-    ON にする操作は「加湿モードへの切り替え」を意味する。
-    加湿モード中のしつどレベル調整自体は select.py の統一しつど select
-    (DaikinHumiditySelect) が担当する (このスイッチはモード切替のみ)。
-    """
-
-    _attr_translation_key = "humidify"
-    _attr_icon = "mdi:water-percent"
-    _param = HUMIDIFY_ONOFF_PARAM
-
-    @property
-    def is_on(self) -> bool | None:
-        return self.coordinator.current_mode == MODE_HUMIDIFY
-
-    async def async_turn_on(self, **kwargs: Any) -> None:
-        was_off = not self.coordinator.is_power_on
-        # 加湿モードへ切り替える。しつどレベル自体は前回値を実機の記憶に委ねる
-        # (モード切替時のパラメータ引き継ぎ方針と同様)。
-        await self.coordinator.async_write_settings({"p_01": MODE_HUMIDIFY})
-        if was_off:
-            await self.coordinator.async_set_power(turn_on=True)
-
-    async def async_turn_off(self, **kwargs: Any) -> None:
-        # 加湿モードを抜ける操作は実機データがなく未検証のため、ここでは
-        # 何もしない (OFFにしたい場合は他モードへの切替 = climate 側の
-        # hvac_mode 変更で行う想定)。
-        _LOGGER.warning(
-            "加湿モードを抜ける操作は未対応です。他の運転モードに切り替えてください。"
-        )
 
 
 class DaikinVentilationSwitch(_DaikinModeParamSwitch):
